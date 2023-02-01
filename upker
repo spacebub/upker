@@ -1,0 +1,718 @@
+#!/bin/bash
+
+## User Configuration
+COLORS=true
+
+BASE_PATH="$HOME/Kernel" ## MANDATORY
+ARCHIVE_FORMAT="tar.xz"  ## MANDATORY
+BOOT_DIR="/boot"         ## MANDATORY
+GRUB_DIR="/boot/grub"    ## MANDATORY
+## User Configuration
+
+## Values set by script, do NOT modify
+KERNEL_SUFFIX=""
+OLD_KERNEL_SUFFIX=""
+KERNEL_VERSION_NUMBER=""
+OLD_KERNEL_VERSION_NUMBER=""
+KERNEL_VERSION=""
+KERNEL_SUFFIXED_VERSION=""
+OLD_KERNEL_SUFFIXED_VERSION=""
+KERNEL_ARCHIVE=""
+BUILD_DIR=""
+OLD_BUILD_DIR=""
+KERNEL_MODULES=""
+CONFIG_FILE=""
+PATCH_FILE=""
+CLEAN_KERNEL=""
+
+UPDATE_COMPONENTS=false
+DELETE_FOLDER=false
+INSTALL=false
+DL_ONLY=false
+RESUME=false
+NO_PATCH=false
+CLANG=false
+SBCTL_PRESENT=false
+SIGN=false
+AUTOUPDATE=false
+
+RESET_C=""
+RED_C=""
+GREEN_C=""
+YELLOW_C=""
+BLUE_C=""
+CYAN_C=""
+## Values set by script, do NOT modify
+
+## Version
+SCRIPT_VERSION="2023.1.18"
+## Version
+
+print_help()
+{
+  printf "%s" "\
+
+  Downloads specified kernel, builds and installs it. If a previous kernel is provided,
+cleans the boot directory, /var/lib and dkms modules as well as anything left in the build
+directory.
+
+${BLUE_C}Usage${RESET_C}:
+  ${GREEN_C}upker${RESET_C} -option ${CYAN_C}value ${YELLOW_C}--flag${RESET_C}
+
+  The default base path is \"${RED_C}\$HOME${RESET_C}/Kernel\". The default archive format is \"tar.xz\".
+These can be changed by editing the \"## User Configuration\" section of this scipt.
+
+  The expected file name for the configuration file is either as majorversion.config (ex. for 6.1.4: 6.1.config)
+or, for custom configs, suffixedversion.config (ex. for 6.1.4-suffix: 6.1-suffix.config).
+If no configuration file is present, the configuration will have to manually be done during building.
+
+  The expected file name for patch scripts is *-patch.txt. If no patch file is present patching will be skipped
+(same as --nopatch). The patch file itself follows the format:
+patchdir (absolute path, no ~/)
+patch name (just the name, without a number or extension)
+  ${BLUE_C}Ex:${RESET_C} 
+  If the directory is ~/Kernel/patches, and the required patches are 0001-first.patch and folder/0002-second.patch
+and you want to skip the numbering:
+    home/user/Kernel/patches
+    *first.patch
+    folder/*second.patch
+  You can also provide the full names:
+    home/user/Kernel/patches
+    0001-first.patch
+    folder/0002-second.patch
+
+${BLUE_C}Examples${RESET_C}:
+  To download and install kernel 6.1.4 as 6.1.4-custom-suffix, remove 6.1.3-custom-suffix,
+  build with LLVM and sign the image with sbctl:
+    ${GREEN_C}upker${RESET_C} -ok ${CYAN_C}6.1.3${RESET_C} -k ${CYAN_C}6.1.4${RESET_C} -s ${CYAN_C}custom-suffix ${YELLOW_C}--clang --sign${RESET_C}
+
+  To download and install version 6.1.4 without removing anything:
+    ${GREEN_C}upker${RESET_C} -k ${CYAN_C}6.1.4 ${YELLOW_C}--install${RESET_C}
+
+  To remove all traces of kernel 6.1.4 including:
+    ${GREEN_C}upker${RESET_C} -k ${CYAN_C}6.1.4 ${YELLOW_C}--clean${RESET_C}
+
+  To download and patch kernel without building or installing:
+    ${GREEN_C}upker${RESET_C} -k ${CYAN_C}6.1.4 ${YELLOW_C}--download${RESET_C}
+
+  To download kernel without building, installing or patching:
+    ${GREEN_C}upker${RESET_C} -k ${CYAN_C}6.1.4 ${YELLOW_C}--download --nopatch${RESET_C}
+
+  To build and install kernel with clang after one has been extracted with --download:
+    ${GREEN_C}upker${RESET_C} -k ${CYAN_C}6.1.4 ${YELLOW_C}--resume --install --clang${RESET_C} (Note: If a kernel has been installed, since the
+                                              build directory is not cleaned, it can be reinstalled
+                                              (rerun make install, create/run mkinitcpio profile,
+                                              run grub-mkconfig) by running the same command (with
+                                              or without --clang).
+                                              If DKMS modules have been installed, they will not be
+                                              reinstalled.)
+
+  To attempt an automatic update:
+    ${GREEN_C}upker ${YELLOW_C}--autoupdate${RESET_C}
+
+${BLUE_C}Options${RESET_C}:
+    -p |--path /path/to/build   Specify a path to the build directory.
+    -k |--kernel 6.1.4          Version number of the kernel to build.
+    -ok|--oldkernel 6.1.4       Version number of old kernel to replace.
+    -s |--suffix tkg            Kernel suffix to be appended at the end of the version number.
+    -os|--oldsuffix tkg         Kernel suffix of the kernel to be replaced.
+    -c |--config backup.config  Specify name of a custom config file located in the build directory.
+    -P |--patch patchall.sh     Specify name of custom patch script located in the build directory.
+
+${BLUE_C}Flags${RESET_C}:
+    --pull                      Update any git repository present in the base path.
+
+    --install                   This will install relevant files to the modules and boot
+                                folders, will refresh grub, run relevant dkms commands and
+                                create a mkinitpcio profile. Enabled by default if old kernel
+                                version is supplied.
+
+    --clean=all/archive         Clean all traces of given kernel. This will clean the
+                                boot and modules folders and will remove the build folder.
+                                Accepts the following arguments:
+                                  all     - Deletes everything: dkms modules, kernel modules,
+                                        images, signatures, boot entries, build folder but
+                                        keeps the archive. Does not work without a kernel
+                                        version.
+                                  archive - Deletes the associated kernel's archive. If
+                                        no kernel version is specified, deletes all kernel
+                                        archives.
+
+
+    --download                  Download the kernel and prepare the directory. This will
+                                also apply patches assuming the nopatch flag is omitted.
+                                If a kernel folder with the same version already exists
+                                it will be replaced.
+
+    --resume                    If a corresponding build directory exists, skips to build.
+                                Does not assume --install, if needed it should be supplied
+                                separately.
+
+    --nopatch                   Skip the patching process defined in the patch script.
+    
+    --clang                     Build kernel with LLVM.
+
+    --sign                      Assuming sbctl is installed and configured and secure boot
+                                has already been set up, signs the new image.
+
+    --autoupdate                Tries to query the latest available kernel, compares it to
+                                the currently used version, gets the current suffix, gets
+                                the compiler used and uses the information to configure,
+                                build and install the newer kernel. No guarantees it will
+                                work 100% correctly. Overwrites every other flag/option.
+
+${BLUE_C}Other${RESET_C}:
+    --help                      Show this text and exit.
+    --version                   Show script version.
+"
+  exit 0
+}
+
+handle_args()
+{
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -p|--path)        BASE_PATH="$2";                 shift 2 ;;
+
+      -P|--patch)       PATCH_FILE="$2";                shift 2 ;;
+
+      -k|--kernel)      KERNEL_VERSION_NUMBER="$2";     shift 2 ;;
+
+      -ok|--oldkernel)  OLD_KERNEL_VERSION_NUMBER="$2"; shift 2 ;;
+
+      -s|--suffix)      KERNEL_SUFFIX="$2";             shift 2 ;;
+
+      -os|--oldsuffix)  OLD_KERNEL_SUFFIX="$2";         shift 2 ;;
+
+      -c|--config)      CONFIG_FILE="$2";               shift 2 ;;
+
+      --pull)           UPDATE_COMPONENTS=true;         shift ;;
+
+      --install)        INSTALL=true;                   shift ;;
+
+      --clean=*)        CLEAN_KERNEL="${1#*=}";         shift ;;
+
+      --delete)         DELETE_FOLDER=true;             shift ;;
+
+      --download)       DL_ONLY=true;                   shift ;;
+
+      --resume)         RESUME=true;                    shift ;;
+
+      --nopatch)        NO_PATCH=true;                  shift ;;
+
+      --clang)          CLANG=true;                     shift ;;
+
+      --sign)           SIGN=true;                      shift ;;
+
+      --autoupdate)     AUTOUPDATE=true;                shift ;;
+
+      -v|--version)     echo $SCRIPT_VERSION;           exit 0 ;;
+
+      --help)           print_help                             ;;
+
+      *)                echo "Unknown option: $1" >&2;  exit 2 ;;
+    esac
+  done
+}
+
+set_colors()
+{
+  if [[ "$COLORS" = true ]]; then
+    RESET_C=$(tput sgr0)
+    RED_C=$(tput setaf 1)
+    GREEN_C=$(tput setaf 2)
+    YELLOW_C=$(tput setaf 3)
+    BLUE_C=$(tput setaf 4)
+    CYAN_C=$(tput setaf 6)
+  fi
+}
+
+print_header()
+{
+  local delim sub space cols
+  local line=$1
+
+  cols=$(tput cols)
+  sub=$(sed -r "s/\x1B(\[[0-9;]*[JKmsu]|\(B)//g" <<< "${line}")
+  space=$(((cols - ${#sub}) / 2))
+  if [[ "$space" -lt 0 ]]; then
+    space=0
+  fi
+  delim=$(printf %"${cols}"s |tr " " "=")
+  
+  printf "\n%s\n\n" "$delim"
+  printf "%${space}s%s\n" " " "$line"
+  printf "\n%s\n\n" "$delim"
+}
+
+print_shortinfo()
+{
+  local cols=30
+
+  printf "%$(((cols - ${#SCRIPT_VERSION}) / 2))s%s\n\n" " " "${YELLOW_C}$SCRIPT_VERSION${RESET_C}"
+  printf "%$(((cols - 5) / 2))s%s\n" " " "${BLUE_C}Usage${RESET_C}"
+  printf "%$(((cols - 26) / 2))s%s\n\n" " " "${GREEN_C}upker${RESET_C} -option ${CYAN_C}value ${YELLOW_C}--flag${RESET_C}"
+  echo "For more info try upker --help"
+
+  exit 0
+}
+
+set_variables()
+{
+  if command -v sbctl &> /dev/null; then
+    SBCTL_PRESENT=true
+  fi
+
+  if [[ "$AUTOUPDATE" = true ]]; then
+    auto_set_vars
+  fi
+
+  KERNEL_VERSION="linux-$KERNEL_VERSION_NUMBER"
+  KERNEL_SUFFIXED_VERSION="$KERNEL_VERSION_NUMBER"
+  KERNEL_ARCHIVE="$KERNEL_VERSION"."$ARCHIVE_FORMAT"
+  BUILD_DIR="${BASE_PATH:?}/${KERNEL_VERSION:?}"
+
+  if [[ -n "$OLD_KERNEL_VERSION_NUMBER" ]]; then
+    INSTALL=true
+    OLD_BUILD_DIR="${BASE_PATH:?}/linux-${OLD_KERNEL_VERSION_NUMBER:?}"
+    OLD_KERNEL_SUFFIXED_VERSION="$OLD_KERNEL_VERSION_NUMBER"
+
+    if [[ -z "$OLD_KERNEL_SUFFIX" ]]; then
+      OLD_KERNEL_SUFFIX="$KERNEL_SUFFIX"
+    fi
+
+    if [[ -n "$OLD_KERNEL_SUFFIX" ]]; then
+      OLD_BUILD_DIR="$OLD_BUILD_DIR-$OLD_KERNEL_SUFFIX"
+      OLD_KERNEL_SUFFIXED_VERSION="$OLD_KERNEL_VERSION_NUMBER-$OLD_KERNEL_SUFFIX"
+    fi 
+  fi
+
+  if [[ -n "$KERNEL_SUFFIX" ]]; then
+    BUILD_DIR="$BUILD_DIR-$KERNEL_SUFFIX"
+    KERNEL_SUFFIXED_VERSION="$KERNEL_VERSION_NUMBER-$KERNEL_SUFFIX"
+  fi 
+
+  set_req_filenames
+}
+
+set_req_filenames()
+{
+  local arr=()
+
+  local i
+  IFS='.' read -ra ADDR <<< "$KERNEL_VERSION_NUMBER"
+  for i in "${ADDR[@]}"; do
+    arr+=("$i")
+  done
+
+  local name="${arr[0]}.${arr[1]}"
+  local sufconf="$name-$KERNEL_SUFFIX.config"
+  local sufpatch="$name-$KERNEL_SUFFIX-patch.txt"
+
+  CONFIG_FILE="$name.config"
+  PATCH_FILE="$name-patch.txt"
+
+  if [[ -n "$KERNEL_SUFFIX" ]]; then
+    if [[ -f "$BASE_PATH/$sufconf" ]]; then
+      CONFIG_FILE="$sufconf"
+    fi
+
+    if [[ -f "$BASE_PATH/$sufpatch" ]]; then
+      PATCH_FILE="$sufpatch"
+    fi
+  fi
+
+  if [[ ! -f "$BASE_PATH/$PATCH_FILE" ]]; then
+    NO_PATCH=true
+  fi
+
+  if [[ ! -f "$BASE_PATH/$CONFIG_FILE" ]]; then
+    local conf="current.config"
+    gzip -dc /proc/config.gz > "$BASE_PATH/$conf" || error $?
+    CONFIG_FILE="$conf"
+  fi
+}
+
+auto_set_vars()
+{
+  local latestVersion currentVer currentSuff 
+
+  IFS='-' read -r currentVer currentSuff <<< "$(uname -r)"
+
+  latestVersion=$(curl -s https://www.kernel.org | grep -A1 latest_link | tail -n1 | grep -Eo '>[^<]+' | grep -Eo '[^>]+')
+
+  if [[ "$latestVersion" = "$currentVer" ]]; then
+    print_header "You're already using the latest version \"${GREEN_C}$latestVersion${RESET_C}\"!"
+    exit 0
+  fi
+
+  print_header "${CYAN_C}$currentVer${RESET_C}-$currentSuff ${GREEN_C}-->${RESET_C} ${CYAN_C}$latestVersion${RESET_C}-$currentSuff"
+
+  if grep -q "clang" < /proc/version; then
+    CLANG=true
+  else
+    CLANG=false
+  fi
+
+  if [[ "$SBCTL_PRESENT" = true ]]; then
+    SIGN=true
+  else
+    SIGN=false
+  fi
+
+  echo "\
+Compiler.......: $([[ $CLANG = true ]] && echo "clang $(clang -dumpversion) ($(which clang))" || echo "gcc $(gcc -dumpversion) ($(which gcc))")
+Sign...........: $([[ $SIGN = true ]] && echo "${GREEN_C}sbctl${RESET_C}" || echo "${RED_C}false${RESET_C}")
+Latest Kernel..: $latestVersion
+Current Kernel.: $currentVer
+Kernel Suffix..: $currentSuff
+"
+
+  KERNEL_VERSION_NUMBER=$latestVersion
+  OLD_KERNEL_VERSION_NUMBER=$currentVer
+  OLD_KERNEL_SUFFIX=$currentSuff
+  KERNEL_SUFFIX=$currentSuff
+}
+
+get_modules()
+{
+  if [[ -n "$OLD_KERNEL_VERSION_NUMBER" ]]; then
+    KERNEL_MODULES=$(dkms status | awk -F ', ' '{ if ($2 == "'"${OLD_KERNEL_SUFFIXED_VERSION}"'") { print $1 }}')
+  else
+    KERNEL_MODULES=$(dkms status | awk -F ', ' '{ print $1 }' | uniq)
+  fi
+}
+
+clean_modules()
+{
+  local kernelVersion=$1
+  local mod
+
+  print_header "${BLUE_C}Removing DKMS modules of ${CYAN_C}$kernelVersion${RESET_C}"
+
+  for mod in $KERNEL_MODULES; do
+    sudo dkms remove -k "$kernelVersion" -m "$mod"
+  done
+}
+
+install_modules()
+{
+  local mod
+
+  print_header "${BLUE_C}Installing DKMS modules for ${CYAN_C}$KERNEL_SUFFIXED_VERSION${RESET_C}"
+
+  for mod in $KERNEL_MODULES; do
+    sudo dkms install -k "$KERNEL_SUFFIXED_VERSION" -m "$mod"
+  done
+}
+
+get_answer()
+{
+  local message=$1
+  local answer
+
+  print_header "$message"
+
+  read -p "[Y]es, [N]o: " -r answer
+
+  if [[ -z "$answer" ]] || [[ "${answer,,}" != "y" ]]; then
+    exit 0
+  fi
+
+  echo ""
+}
+
+prompt_clean_kernel()
+{
+  local answer
+
+  if [[ "$CLEAN_KERNEL" = "all" ]]; then
+    get_answer "${BLUE_C}You are about to completely remove ${CYAN_C}$KERNEL_SUFFIXED_VERSION${BLUE_C} and associated components, are you sure?${RESET_C}"
+
+    clean_kernel "$KERNEL_SUFFIXED_VERSION" "$BUILD_DIR"
+    update_grub
+  else
+    if [[ -n "$KERNEL_VERSION_NUMBER" ]]; then
+      get_answer "${BLUE_C}You are about to remove ${YELLOW_C}$BASE_PATH/$KERNEL_ARCHIVE${BLUE_C}, are you sure?${RESET_C}"
+
+      rm -v "$BASE_PATH/$KERNEL_ARCHIVE"
+    else
+      get_answer "${BLUE_C}You are about to remove all kernel archives, are you sure?${RESET_C}"
+
+      rm -v "$BASE_PATH"/linux-*."$ARCHIVE_FORMAT" 2> /dev/null || echo "no archives to delete"
+    fi
+  fi
+
+  exit 0
+}
+
+prepare_build()
+{
+  local kernelFamily="v${KERNEL_VERSION_NUMBER:0:1}.x"
+  local archiveDir="$BASE_PATH/$KERNEL_ARCHIVE"
+
+  if [[ ! -f "$archiveDir" ]]; then
+    print_header "${BLUE_C}Downloading archive ${YELLOW_C}\"$KERNEL_ARCHIVE\"${RESET_C}"
+    wget -P "$BASE_PATH" https://cdn.kernel.org/pub/linux/kernel/"$kernelFamily"/"$KERNEL_ARCHIVE" || error $?
+  fi 
+
+  if [[ -d "$BUILD_DIR" ]]; then
+    echo "Removing $BUILD_DIR"
+    rm -rf "$BUILD_DIR"
+  fi
+  mkdir "$BUILD_DIR"
+
+  print_header "${BLUE_C}Extracting to ${YELLOW_C}\"$BUILD_DIR\"${RESET_C}"
+  if ! command -v pv &> /dev/null || ! command -v xzcat &> /dev/null; then
+    echo "Extracting..."
+    tar -xf "$archiveDir" -C "$BUILD_DIR" --strip 1 || error $?
+    echo "Done."
+  else
+    pv "$archiveDir" | xzcat | tar -xpC "$BUILD_DIR" --strip 1 || error $?
+  fi
+
+  if [[ $NO_PATCH = false ]]; then
+    print_header "${BLUE_C}Copying ${YELLOW_C}\"$BASE_PATH/$PATCH_FILE\"${RESET_C} ${BLUE_C}to ${YELLOW_C}\"$BUILD_DIR/patch.txt\"${RESET_C}"
+
+    cp -v "$BASE_PATH/$PATCH_FILE" "$BUILD_DIR"/patch.txt
+  fi
+
+  if [[ -f "$BASE_PATH/$CONFIG_FILE" ]]; then
+    print_header "${BLUE_C}Copying ${YELLOW_C}\"$BASE_PATH/$CONFIG_FILE\"${RESET_C} ${BLUE_C}to ${YELLOW_C}\"$BUILD_DIR/.config\"${RESET_C}"
+
+    cp -v "$BASE_PATH/$CONFIG_FILE" "$BUILD_DIR"/.config
+  fi
+
+  if [[ -n "$KERNEL_SUFFIX" ]]; then
+    sed -i -e '/^CONFIG_LOCALVERSION=/s/=.*/="'"-$KERNEL_SUFFIX"'"/' "$BUILD_DIR"/.config
+  else
+    sed -i -e '/^CONFIG_LOCALVERSION=/s/=.*/="'""'"/' "$BUILD_DIR"/.config
+  fi
+}
+
+update_components()
+{
+  local line repoDir repoName
+
+  print_header "${BLUE_C}Updating kernel components...${RESET_C}"
+
+  find -L "${BASE_PATH}" -type d -name .git | while read -r line; do
+    repoDir=$(dirname "$line")
+    repoName=$(basename "$repoDir")
+
+    echo ""
+    echo "$repoName:"
+
+    if git -C "${repoDir}" pull; then
+      printf "${GREEN_C}%s${RESET_C}\n" "Success."
+    else
+      printf "${RED_C}%s${RESET_C}\n" "Error."
+    fi
+  done
+
+  echo ""
+}
+
+patch_kernel()
+{
+  local line path i
+  local arr=()
+
+  while IFS= read -r line;do
+    arr+=("$line")
+  done < "$BASE_PATH/$PATCH_FILE"
+
+  path="${arr[0]}"
+
+  print_header "${BLUE_C}Patching from ${YELLOW_C}\"$path\"${RESET_C}"
+
+# Wee need this to support wildcards
+# shellcheck disable=2086
+  for ((i = 1; i < "${#arr[@]}"; i++)); do
+    patch -p1 < "$path"/${arr[i]} || graceful_error $? "${RED_C}One or more lines were written to a reject file.${RESET_C}"
+  done
+}
+
+build_kernel()
+{
+  if [[ "$CLANG" = true ]]; then
+    print_header "${BLUE_C}Building kernel ${CYAN_C}$KERNEL_SUFFIXED_VERSION${RESET_C} ${BLUE_C}with ${YELLOW_C}LLVM${RESET_C}"
+    make CC=clang LLVM=1 -j"$(nproc --all)" || error $?
+  else
+    print_header "${BLUE_C}Building kernel ${CYAN_C}$KERNEL_SUFFIXED_VERSION${RESET_C} ${BLUE_C}with ${YELLOW_C}GCC${RESET_C}"
+    make -j"$(nproc --all)" || error $?
+  fi
+}
+
+create_image()
+{
+  local img="$BOOT_DIR/initramfs-$KERNEL_SUFFIXED_VERSION.img"
+  local vml="$BOOT_DIR/vmlinuz-$KERNEL_SUFFIXED_VERSION"
+  local presetPath="/etc/mkinitcpio.d/$KERNEL_SUFFIXED_VERSION.preset"
+
+  local preset="\
+# mkinitcpio preset file for kernel '$KERNEL_SUFFIXED_VERSION'
+
+ALL_config=\"/etc/mkinitcpio.conf\"
+ALL_kver=\"$vml\"
+
+PRESETS=('default')
+
+default_image=\"$img\"
+"
+
+  print_header "${BLUE_C}Creating mkinitcpio preset and building image${RESET_C}"
+
+  echo "$preset" | sudo tee -a "$presetPath" > /dev/null
+  sudo mkinitcpio -p "$KERNEL_SUFFIXED_VERSION" || error $?
+}
+
+update_grub()
+{
+  print_header "${BLUE_C}Updating GRUB${RESET_C}"
+
+  sudo grub-mkconfig -o "$GRUB_DIR/grub.cfg" || error $?
+}
+
+install_kernel()
+{
+  print_header "${BLUE_C}Installing modules and copying kernel executable${RESET_C}"
+
+  sudo make -j"$(nproc --all)" modules_install || error $?
+
+  sudo cp -v arch/x86_64/boot/bzImage "$BOOT_DIR/vmlinuz-$KERNEL_SUFFIXED_VERSION"
+  sudo cp -v System.map "$BOOT_DIR/System.map"
+}
+
+clean_kernel()
+{
+  local kernelSuffixedVersion=$1
+  local buildDir=$2
+  local presetPath="/etc/mkinitcpio.d/$kernelSuffixedVersion.preset"
+
+  clean_modules "$kernelSuffixedVersion"
+
+  print_header "${BLUE_C}Cleaning all traces of ${CYAN_C}$kernelSuffixedVersion${RESET_C}"
+
+  if [[ "$SBCTL_PRESENT" = true ]]; then
+    sudo sbctl remove-file "$BOOT_DIR/vmlinuz-$kernelSuffixedVersion"
+  fi
+
+  if [[ -d "/usr/lib/modules/$kernelSuffixedVersion" ]]; then
+    sudo rm -rf "/usr/lib/modules/$kernelSuffixedVersion"    
+    echo "removed directory '/usr/lib/modules/$kernelSuffixedVersion'"
+  fi
+
+  if [[ -d "$buildDir" ]]; then
+    sudo rm -rf "$buildDir"
+    echo "removed directory '$buildDir'"
+  fi
+
+  sudo rm -v "$BOOT_DIR/vmlinuz-$kernelSuffixedVersion"
+  sudo rm -v "$BOOT_DIR/initramfs-$kernelSuffixedVersion.img"
+  sudo rm -v "$presetPath"
+}
+
+sign_image()
+{
+  print_header "${BLUE_C}Signing image${RESET_C}"
+
+  if [[ "$SBCTL_PRESENT" = true ]]; then
+    sudo sbctl sign -s "$BOOT_DIR/vmlinuz-$KERNEL_SUFFIXED_VERSION"
+  fi
+}
+
+error()
+{
+  print_header "${RED_C}A FUNCTION EXITED WITH CODE $1, ABORTING..${RESET_C}"
+  exit 2;
+}
+
+graceful_error()
+{
+  local status=$1
+  local message=${2:-"${RED_C}A non-critical error occured!${RESET_C}"}
+
+  if [[ "$status" -gt 1 ]]; then
+    error "$status"
+  else
+    echo "$message"
+  fi
+}
+
+main()
+{
+  set_colors
+
+  if [[ $# = 0 ]]; then
+    print_shortinfo
+  fi
+
+  handle_args "$@"
+
+  if [[ -z "$KERNEL_VERSION_NUMBER" ]] && [[ "$AUTOUPDATE" = false ]] && [[ "$CLEAN_KERNEL" != "archive" ]]; then
+    print_header "${RED_C}Kernel version is required...${RESET_C}"
+    exit 2
+  fi
+
+  set_variables
+
+  if [[ "$DELETE_FOLDER" = true ]]; then
+    print_header "${BLUE_C}Removing ${YELLOW_C}\"$BUILD_DIR\"${RESET_C}"
+    rm -rf "$BUILD_DIR"
+    exit 0
+  fi
+
+  get_modules
+
+  if [[ -n "$CLEAN_KERNEL" ]]; then
+    prompt_clean_kernel
+  fi
+
+  if [[ "$UPDATE_COMPONENTS" = true ]]; then
+    update_components
+  fi
+
+  if [[ "$RESUME" = false ]]; then
+    prepare_build
+
+    if [[ "$NO_PATCH" = false ]]; then
+      pushd "$BUILD_DIR" &> /dev/null || error $?
+      patch_kernel
+      popd &> /dev/null || error $?
+    fi
+  fi
+
+  if [[ "$DL_ONLY" = true ]]; then
+    exit 0;
+  fi
+
+  if [[ "$RESUME" = true ]] && [[ ! -d "$BUILD_DIR" ]];then
+    print_header "${RED_C}Resume was chosen without a valid directory. Expected: ${YELLOW_C}\"$BUILD_DIR\"${RESET_C}"
+    exit 2
+  fi
+
+  pushd "$BUILD_DIR" &> /dev/null || error $?
+
+  build_kernel
+
+  if [[ "$INSTALL" = true ]]; then
+    install_kernel
+    install_modules
+    create_image
+
+    if [ -n "$OLD_KERNEL_VERSION_NUMBER" ]; then
+      clean_kernel "$OLD_KERNEL_SUFFIXED_VERSION" "$OLD_BUILD_DIR"
+    fi
+
+    update_grub
+  fi
+
+  if [[ "$SIGN" = true ]]; then
+    sign_image
+  fi
+
+  popd &> /dev/null || error $?
+}
+
+main "$@"
